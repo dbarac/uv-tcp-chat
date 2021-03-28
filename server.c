@@ -3,27 +3,33 @@
 #include <string.h>
 #include <uv.h>
 
+#define MAX_CLIENTS 32
 #define DEFAULT_PORT 7000
 #define DEFAULT_BACKLOG 128
 
 uv_loop_t *loop;
 struct sockaddr_in addr;
+uv_stream_t *clients[MAX_CLIENTS];
+int num_clients;
 
 typedef struct {
   uv_write_t req;
   uv_buf_t buf;
 } write_req_t;
 
+
 void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
   buf->base = (char*) malloc(suggested_size);
   buf->len = suggested_size;
 }
+
 
 void free_write_req(uv_write_t *req) {
   write_req_t *wr = (write_req_t*) req;
   free(wr->buf.base);
   free(wr);
 }
+
 
 void echo_write(uv_write_t *req, int status) {
   if (status) {
@@ -32,12 +38,19 @@ void echo_write(uv_write_t *req, int status) {
   free_write_req(req);
 }
 
+
 void echo_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
   if (nread > 0) {
-    write_req_t *req = (write_req_t*) malloc(sizeof(write_req_t));
-    req->buf = uv_buf_init(buf->base, nread);
-    printf("%s\n", req->buf.base);
-    uv_write((uv_write_t*) req, client, &req->buf, 1, echo_write);
+    printf("%s\n", buf->base);
+    printf("num clients: %d\n", num_clients);
+    for (int i = 0; i < num_clients; i++) {
+      write_req_t *req = (write_req_t*) malloc(sizeof(write_req_t));
+      char *message = (char*) malloc(nread);
+      strncpy(message, buf->base, nread);
+      req->buf = uv_buf_init(message, nread);
+      printf("i: %d\n", i);
+      uv_write((uv_write_t*) req, clients[i], &req->buf, 1, echo_write);
+    }
     return;
   } else if (nread < 0) {
     if (nread != UV_EOF) {
@@ -57,6 +70,7 @@ void on_new_connection(uv_stream_t *server, int status) {
     printf("New client connected\n");
   }
   uv_tcp_t *client = (uv_tcp_t*) malloc(sizeof(uv_tcp_t));
+  clients[num_clients++] = (uv_stream_t*)client;
   uv_tcp_init(loop, client);
   if (uv_accept(server, (uv_stream_t*) client) == 0) {
     uv_read_start((uv_stream_t*) client, alloc_buffer, echo_read);
@@ -64,6 +78,7 @@ void on_new_connection(uv_stream_t *server, int status) {
     uv_close((uv_handle_t*) client, NULL);
   }
 }
+
 
 int main() {
   loop = uv_default_loop();
