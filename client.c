@@ -13,11 +13,14 @@
 #define INPUT_AREA_HEIGHT 5
 #define KEY_BACKSPACE 127
 #define PROMPT_LEN 14
+#define USERNAME_LEN 10
 
 uv_loop_t *loop;
 struct sockaddr_in addr;
 uv_tty_t tty;
 uv_pipe_t in;
+uv_connect_t* connect_;
+uv_tcp_t *socket_;
 uv_timer_t tick;
 uv_write_t write_req;
 uv_write_t write_req2;
@@ -37,6 +40,7 @@ void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
   buf->len = suggested_size;
 }
 
+
 /*void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
   *buf = uv_buf_init((char*) malloc(suggested_size), suggested_size);
 }*/
@@ -53,38 +57,6 @@ void echo_write(uv_write_t *req, int status) {
     fprintf(stderr, "Write error %s\n", uv_strerror(status));
   }
   free_write_req(req);
-}
-
-
-void echo_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
-  if (nread > 0) {
-    //write_req_t *req = (write_req_t*) malloc(sizeof(write_req_t));
-    //req->buf = uv_buf_init(buf->base, nread);
-    printf("%s\n", buf->base);
-    //uv_write((uv_write_t*) req, client, &req->buf, 1, echo_write);
-    return;
-  } else if (nread < 0) {
-    if (nread != UV_EOF) {
-      fprintf(stderr, "Read error %s\n", uv_err_name(nread));
-    }
-    uv_close((uv_handle_t*) client, NULL);
-  }
-  free(buf->base);
-}
-
-
-void on_connect(uv_connect_t* req, int status) {
-  if (status < 0) {
-    fprintf(stderr, "New connection error %s\n", uv_strerror(status));
-    return;
-  } else {
-    //printf("Connected to server: %s\n", DEFAULT_SERVER_IP);
-  }
-  write_req_t *w_req = (write_req_t*) malloc(sizeof(write_req_t));
-  char *message = (char*) req->handle->data;//(char*) malloc(10);
-  w_req->buf = uv_buf_init(message, strlen(message));
-  uv_write((uv_write_t*) w_req, req->handle, &w_req->buf, 1, echo_write);
-  uv_read_start((uv_stream_t*)req->handle, alloc_buffer, echo_read);
 }
 
 
@@ -119,6 +91,58 @@ void setup_tty() {
 }
 
 
+void update_chat(const uv_buf_t *message) {
+  int pos_y = height - INPUT_AREA_HEIGHT + 1;
+  int pos_x = PROMPT_LEN + user_msg.len;
+  char data[128];
+  uv_buf_t buf;
+  buf.base = data;
+  // if msgs == height: clear screen and start from top again
+  if (msgs == height - INPUT_AREA_HEIGHT - 1) {
+    setup_tty();
+    msgs = 1;
+  } else {
+    msgs++;
+  }
+
+  buf.len = sprintf(buf.base, "\033[H\033[%dB%s\033[H\033[%dB\033[%dC", msgs, message->base, pos_y, pos_x);
+  uv_write(&write_req2, (uv_stream_t*) &tty, &buf, 1, NULL);
+}
+
+void receive_message(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
+  if (nread > 0) {
+    //write_req_t *req = (write_req_t*) malloc(sizeof(write_req_t));
+    //req->buf = uv_buf_init(buf->base, nread);
+    //printf("%s\n", buf->base);
+    //uv_write((uv_write_t*) req, client, &req->buf, 1, echo_write);
+ //   strncpy(messages[next_msg_pos], buf->base, nread);
+//    next_msg_pos++;
+    update_chat(buf);
+    return;
+  } else if (nread < 0) {
+    if (nread != UV_EOF) {
+      fprintf(stderr, "Read error %s\n", uv_err_name(nread));
+    }
+    uv_close((uv_handle_t*) client, NULL);
+  }
+  //free(buf->base);
+}
+
+
+void on_connect(uv_connect_t* req, int status) {
+  if (status < 0) {
+    fprintf(stderr, "New connection error %s\n", uv_strerror(status));
+    return;
+  } else {
+    //printf("Connected to server: %s\n", DEFAULT_SERVER_IP);
+  }
+  write_req_t *w_req = (write_req_t*) malloc(sizeof(write_req_t));
+  char *message = (char*) req->handle->data;//(char*) malloc(10);
+  w_req->buf = uv_buf_init(message, strlen(message));
+  uv_write((uv_write_t*) w_req, req->handle, &w_req->buf, 1, echo_write);
+  uv_read_start((uv_stream_t*)req->handle, alloc_buffer, receive_message);
+}
+
 /*
  * Update user_msg and tty depending on input char:
  *   - if char is printable, print
@@ -149,12 +173,19 @@ void send_message() {
   int pos_x = PROMPT_LEN + user_msg.len;
   char data[128];
   uv_buf_t buf;
-  buf.base = data;
+  user_msg.base[user_msg.len] = '\0';
+  buf.base = (char*) malloc(user_msg.len+1);
+  buf.len = user_msg.len + 1;
 
   if (user_msg.len > 0) {
-    buf.len = sprintf(buf.base, "\033[H\033[%dB%s", msgs, user_msg.base);
+    /*buf.len = sprintf(buf.base, "\033[H\033[%dB%s", msgs, user_msg.base);
     msgs++;
-    uv_write(&write_req, (uv_stream_t*) &tty, &buf, 1, NULL);
+    uv_write(&write_req, (uv_stream_t*) &tty, &buf, 1, NULL);*/
+    write_req_t *w_req = (write_req_t*) malloc(sizeof(write_req_t));
+    //char *message = (char*) req->handle->data;//(char*) malloc(10);
+    w_req->buf = uv_buf_init(buf.base, buf.len);
+    strncpy(buf.base, user_msg.base, user_msg.len);
+    uv_write((uv_write_t*) w_req, (uv_stream_t*) socket_, &buf, 1, echo_write);
   }
 }
 
@@ -176,6 +207,7 @@ void clear_message_input() {
 
 void process_char(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
   if (nread < 0){
+    printf("close\n");
     if (nread == UV_EOF){
       // end of file
 			int a = 3;
@@ -199,25 +231,32 @@ void process_char(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
 
 int main() {
   char *username = malloc(20);
-  printf("Enter username: ");
-  scanf("%s", username);
+  //printf("Enter username: ");
+  //scanf("%s", username);
+  strcpy(username, "uname");
 
-  user_msg.base = (char*) malloc(MAX_MSG_LEN);
+  user_msg.base = (char*) malloc(MAX_MSG_LEN + 1);
+  /*strncpy(user_msg.base, username, strlen(username));
+  user_msg.base[strlen(username)] = ':';
+  for (int i = strlen(username) + 1; i < USERNAME_LEN; i++) {
+    user_msg.base[i] = ' ';
+  }
+  printf("%s\n", user_msg.base);*/
   user_msg.len = 0;
 
-  loop = uv_default_loop();
 
+  loop = uv_default_loop();
 
   uv_pipe_init(loop, &in, 0);
   uv_pipe_open(&in, 0);
   uv_read_start((uv_stream_t*)&in, alloc_buffer, process_char);
 
-  uv_tcp_t *socket = (uv_tcp_t*) malloc(sizeof(uv_tcp_t));
-  socket->data  = (void*) username;
-  uv_tcp_init(loop, socket);
-  uv_connect_t* connect = (uv_connect_t*) malloc(sizeof(uv_connect_t));
+  socket_ = (uv_tcp_t*) malloc(sizeof(uv_tcp_t));
+  socket_->data  = (void*) username;
+  uv_tcp_init(loop, socket_);
+  connect_ = (uv_connect_t*) malloc(sizeof(uv_connect_t));
   uv_ip4_addr(DEFAULT_SERVER_IP, DEFAULT_SERVER_PORT, &addr);
-  uv_tcp_connect(connect, socket, (const struct sockaddr*)&addr, on_connect);
+  uv_tcp_connect(connect_, socket_, (const struct sockaddr*)&addr, on_connect);
   int r = 0;
   if (r) {
     fprintf(stderr, "Listen error %s\n", uv_strerror(r));
