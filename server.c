@@ -31,55 +31,82 @@ void free_write_req(uv_write_t *req) {
 }
 
 
-void echo_write(uv_write_t *req, int status) {
+void free_client(uv_handle_t *client) {
+  free(client);  
+  for (int i = 0; i < MAX_CLIENTS; i++) {
+    if ((uv_stream_t*)client == clients[i]) {
+      clients[i] = NULL;
+      break;
+    }
+  }
+}
+
+
+void after_write(uv_write_t *req, int status) {
   if (status) {
     fprintf(stderr, "Write error %s\n", uv_strerror(status));
   }
   free_write_req(req);
 }
 
-
-void echo_read(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
+/*
+ * Send received message to all connected clients.
+ * In case of error, close sender connection and remove from list of clients.
+*/
+void send_to_all(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
   if (nread > 0) {
-    printf("%s\n", buf->base);
-    printf("num clients: %d\n", num_clients);
     for (int i = 0; i < num_clients; i++) {
+      if (clients[i] == NULL) {
+        continue;
+      }
       write_req_t *req = (write_req_t*) malloc(sizeof(write_req_t));
       char *message = (char*) malloc(nread);
-      strncpy(message, buf->base, nread);
+      memcpy(message, buf->base, nread);
       req->buf = uv_buf_init(message, nread);
-      printf("i: %d\n", i);
-      uv_write((uv_write_t*) req, clients[i], &req->buf, 1, echo_write);
+      uv_write((uv_write_t*) req, clients[i], &req->buf, 1, after_write);
     }
+    free(buf->base);
     return;
   } else if (nread < 0) {
+    num_clients--;
     if (nread != UV_EOF) {
-      fprintf(stderr, "Read error %s\n", uv_err_name(nread));
+      fprintf(stderr, "Read error%s\n", uv_err_name(nread));
     }
-    uv_close((uv_handle_t*) client, NULL);
+    printf("Closing client connection.\n");
+    uv_close((uv_handle_t*) client, free_client);
   }
-  free(buf->base);
 }
 
-
+/*
+ * Accept new client connection, add to list of all clients.
+ * Start reading incoming messages.
+ */
 void on_new_connection(uv_stream_t *server, int status) {
   if (status < 0) {
     fprintf(stderr, "New connection error %\n", uv_strerror(status));
     return;
-  } else {
-    printf("New client connected\n");
+  } 
+  if (num_clients == MAX_CLIENTS) {
+    printf("Max number of clients already connected.\n");
   }
   uv_tcp_t *client = (uv_tcp_t*) malloc(sizeof(uv_tcp_t));
-  clients[num_clients++] = (uv_stream_t*)client;
   uv_tcp_init(loop, client);
-  if (uv_accept(server, (uv_stream_t*) client) == 0) {
-    uv_read_start((uv_stream_t*) client, alloc_buffer, echo_read);
+
+  if (uv_accept(server, (uv_stream_t*) client) == 0 && num_clients < MAX_CLIENTS) {
+    int i = 0;
+    while (clients[i] != NULL) i++;
+    clients[i] = (uv_stream_t*)client;
+    num_clients++;
+    uv_read_start((uv_stream_t*) client, alloc_buffer, send_to_all);
+    printf("New client connected\n");
   } else {
-    uv_close((uv_handle_t*) client, NULL);
+    uv_close((uv_handle_t*) client, free_client);
   }
 }
 
-
+/*
+ * Multi-user TCP chat server
+ */
 int main() {
   loop = uv_default_loop();
   uv_tcp_t server;
