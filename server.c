@@ -119,6 +119,8 @@ int main() {
   if (r) {
     fprintf(stderr, "Listen error %s\n", uv_strerror(r));
     return 1;
+  } else {
+    printf("Listening on port %d\n", DEFAULT_PORT);
   }
   return uv_run(loop, UV_RUN_DEFAULT);
 }
