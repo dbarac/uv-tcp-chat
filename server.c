@@ -52,7 +52,7 @@ void after_write(uv_write_t *req, int status) {
 /*
  * Send received message to all connected clients.
  * In case of error, close sender connection and remove from list of clients.
-*/
+ */
 void send_to_all(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
   if (nread > 0) {
     for (int i = 0; i < num_clients; i++) {
@@ -65,8 +65,7 @@ void send_to_all(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
       req->buf = uv_buf_init(message, nread);
       uv_write((uv_write_t*) req, clients[i], &req->buf, 1, after_write);
     }
-    free(buf->base);
-    return;
+    //return;
   } else if (nread < 0) {
     num_clients--;
     if (nread != UV_EOF) {
@@ -75,6 +74,7 @@ void send_to_all(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
     printf("Closing client connection.\n");
     uv_close((uv_handle_t*) client, free_client);
   }
+  free(buf->base);
 }
 
 /*

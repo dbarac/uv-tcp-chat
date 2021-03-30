@@ -10,30 +10,27 @@
 #define DEFAULT_SERVER_PORT 7000
 #define DEFAULT_SERVER_IP "127.0.0.1"
 #define MAX_MSG_LEN 78
+#define MSG_BUF_SIZE 256
 #define INPUT_AREA_HEIGHT 5
 #define KEY_BACKSPACE 127
 #define PROMPT_LEN 14
 #define USERNAME_LEN 10
 
-uv_loop_t *loop;
-struct sockaddr_in addr;
-uv_tty_t tty;
-uv_pipe_t in;
-uv_connect_t* connect_;
-uv_tcp_t *socket_;
-uv_timer_t tick;
-uv_write_t write_req;
-uv_write_t write_req2;
-int width;
-int height;
-int msgs = 1;
-
-uv_buf_t user_msg;
 typedef struct {
   uv_write_t req;
   uv_buf_t buf;
 } write_req_t;
 
+uv_loop_t *loop;
+uv_tty_t tty; /* STDOUT */
+uv_pipe_t in; /* STDIN */
+uv_tcp_t *socket_;
+
+int width;
+int height;
+int msgs_on_screen = 1;
+uv_buf_t user_msg;
+char username[USERNAME_LEN];
 
 void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
   buf->base = (char*) malloc(suggested_size);
@@ -41,14 +38,18 @@ void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
 }
 
 
-/*void alloc_buffer(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf) {
-  *buf = uv_buf_init((char*) malloc(suggested_size), suggested_size);
-}*/
-
 void free_write_req(uv_write_t *req) {
   write_req_t *wr = (write_req_t*) req;
   free(wr->buf.base);
   free(wr);
+}
+
+
+void after_write(uv_write_t *req, int status) {
+  if (status) {
+    fprintf(stderr, "Write error %s\n", uv_strerror(status));
+  }
+  free_write_req(req);
 }
 
 
@@ -59,6 +60,14 @@ void echo_write(uv_write_t *req, int status) {
   free_write_req(req);
 }
 
+void get_username() {
+  printf("Enter username: ");
+  scanf("%8s", username);
+  int i = strlen(username);
+  username[i] = ':';
+  while (++i <= USERNAME_LEN) username[i] = ' ';
+}
+ 
 
 void disable_line_buffering() {
   struct termios term;
@@ -72,7 +81,7 @@ void disable_line_buffering() {
 
 /*
  * Find window size, disable line buffering, setup interface and initial cursor position.
-*/
+ */
 void setup_tty() {
   if (uv_tty_get_winsize(&tty, &width, &height)) {
     fprintf(stderr, "Could not get TTY information\n");
@@ -81,51 +90,49 @@ void setup_tty() {
   }
   disable_line_buffering();
 
-  char input_prompt[128];
-  uv_buf_t buf;
-  buf.base = input_prompt;
   int prompt_pos = height - INPUT_AREA_HEIGHT;
-  buf.len = sprintf(buf.base, "\033[2J\033[H\033[%dB------------------\nYour message: ", prompt_pos);
-  uv_write(&write_req, (uv_stream_t*) &tty, &buf, 1, NULL);
 
+  write_req_t *req = (write_req_t*) malloc(sizeof(write_req_t));
+  req->buf.base = (char*) malloc(MSG_BUF_SIZE);
+  req->buf.len = sprintf(req->buf.base, "\033[2J\033[H\033[%dB------------------\nYour message: ", prompt_pos);
+  uv_write((uv_write_t*) req, (uv_stream_t*) &tty, &req->buf, 1, after_write);
 }
 
 
+/*
+ * Clear old messages if screen is full,
+ * print received message to screen and return cursor to message input area.
+ */
 void update_chat(const uv_buf_t *message) {
-  int pos_y = height - INPUT_AREA_HEIGHT + 1;
-  int pos_x = PROMPT_LEN + user_msg.len;
-  char data[128];
-  uv_buf_t buf;
-  buf.base = data;
-  // if msgs == height: clear screen and start from top again
-  if (msgs == height - INPUT_AREA_HEIGHT - 1) {
-    setup_tty();
-    msgs = 1;
+  if (msgs_on_screen == height - INPUT_AREA_HEIGHT - 1) {
+    setup_tty(); //clear screen func
+    msgs_on_screen = 1;
   } else {
-    msgs++;
+    msgs_on_screen++;
   }
+  write_req_t *req = (write_req_t*) malloc(sizeof(write_req_t));
+  req->buf.base = (char*) malloc(MSG_BUF_SIZE);
 
-  buf.len = sprintf(buf.base, "\033[H\033[%dB%s\033[H\033[%dB\033[%dC", msgs, message->base, pos_y, pos_x);
-  uv_write(&write_req2, (uv_stream_t*) &tty, &buf, 1, NULL);
+  int cursor_y = height - INPUT_AREA_HEIGHT + 1;
+  int cursor_x = PROMPT_LEN + user_msg.len;
+  req->buf.len = sprintf(req->buf.base, "\033[H\033[%dB%s\033[H\033[%dB\033[%dC",
+                         msgs_on_screen, message->base, cursor_y, cursor_x);
+  uv_write((uv_write_t*) req, (uv_stream_t*) &tty, &req->buf, 1, after_write);
 }
+
 
 void receive_message(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
   if (nread > 0) {
-    //write_req_t *req = (write_req_t*) malloc(sizeof(write_req_t));
-    //req->buf = uv_buf_init(buf->base, nread);
-    //printf("%s\n", buf->base);
-    //uv_write((uv_write_t*) req, client, &req->buf, 1, echo_write);
- //   strncpy(messages[next_msg_pos], buf->base, nread);
-//    next_msg_pos++;
     update_chat(buf);
     return;
   } else if (nread < 0) {
     if (nread != UV_EOF) {
       fprintf(stderr, "Read error %s\n", uv_err_name(nread));
     }
+    printf("close\n");
     uv_close((uv_handle_t*) client, NULL);
   }
-  //free(buf->base);
+  free(buf->base);
 }
 
 
@@ -137,9 +144,11 @@ void on_connect(uv_connect_t* req, int status) {
     //printf("Connected to server: %s\n", DEFAULT_SERVER_IP);
   }
   write_req_t *w_req = (write_req_t*) malloc(sizeof(write_req_t));
+  /*
   char *message = (char*) req->handle->data;//(char*) malloc(10);
   w_req->buf = uv_buf_init(message, strlen(message));
   uv_write((uv_write_t*) w_req, req->handle, &w_req->buf, 1, echo_write);
+*/
   uv_read_start((uv_stream_t*)req->handle, alloc_buffer, receive_message);
 }
 
@@ -147,70 +156,75 @@ void on_connect(uv_connect_t* req, int status) {
  * Update user_msg and tty depending on input char:
  *   - if char is printable, print
  *   - if user pressed backspace, delete char from message input
-*/
+ */
 void update_user_message(char input) {
-  char data[128];
-  uv_buf_t buf;
-  buf.base = data;
-  int pos_y = height - INPUT_AREA_HEIGHT + 1;
-  int pos_x = PROMPT_LEN + user_msg.len;
+  int cursor_y = height - INPUT_AREA_HEIGHT + 1;
+  int cursor_x = PROMPT_LEN + user_msg.len;
+
+  write_req_t *req = (write_req_t*) malloc(sizeof(write_req_t));
+  req->buf.base = (char*) malloc(MSG_BUF_SIZE);
 
   if (input == KEY_BACKSPACE && user_msg.len > 0) {
     user_msg.len--;
-    pos_x--;
-    buf.len = sprintf(buf.base, "\033[H\033[%dB\033[%dC \033[1D", pos_y, pos_x);
-    uv_write(&write_req, (uv_stream_t*) &tty, &buf, 1, NULL);
+    cursor_x--;
+    req->buf.len = sprintf(req->buf.base, "\033[H\033[%dB\033[%dC \033[1D", cursor_y, cursor_x);
+    uv_write((uv_write_t*) req, (uv_stream_t*) &tty, &req->buf, 1, after_write);
   } else if (isprint(input) && user_msg.len < MAX_MSG_LEN) {
     user_msg.base[user_msg.len++] = input;
-    buf.len = sprintf(buf.base, "\033[H\033[%dB\033[%dC%c", pos_y, pos_x, input);
-    uv_write(&write_req, (uv_stream_t*) &tty, &buf, 1, NULL);
+    req->buf.len = sprintf(req->buf.base, "\033[H\033[%dB\033[%dC%c", cursor_y, cursor_x, input);
+    uv_write((uv_write_t*) req, (uv_stream_t*) &tty, &req->buf, 1, after_write);
+  } else {
+    free(req->buf.base);
+    free(req);
   }
 }
 
 
+/*
+ * Send username and message to server if message not empty.
+ */
 void send_message() {
-  int pos_y = height - INPUT_AREA_HEIGHT + 1;
-  int pos_x = PROMPT_LEN + user_msg.len;
-  char data[128];
-  uv_buf_t buf;
-  user_msg.base[user_msg.len] = '\0';
-  buf.base = (char*) malloc(user_msg.len+1);
-  buf.len = user_msg.len + 1;
-
-  if (user_msg.len > 0) {
-    /*buf.len = sprintf(buf.base, "\033[H\033[%dB%s", msgs, user_msg.base);
-    msgs++;
-    uv_write(&write_req, (uv_stream_t*) &tty, &buf, 1, NULL);*/
-    write_req_t *w_req = (write_req_t*) malloc(sizeof(write_req_t));
-    //char *message = (char*) req->handle->data;//(char*) malloc(10);
-    w_req->buf = uv_buf_init(buf.base, buf.len);
-    strncpy(buf.base, user_msg.base, user_msg.len);
-    uv_write((uv_write_t*) w_req, (uv_stream_t*) socket_, &buf, 1, echo_write);
+  if (user_msg.len == 0) {
+    return;
   }
+  user_msg.base[user_msg.len] = '\0';
+  //char *username = "uname:    ";
+  write_req_t *req = (write_req_t*) malloc(sizeof(write_req_t));
+  req->buf.len = USERNAME_LEN + user_msg.len + 1;
+  req->buf.base = (char*) malloc(USERNAME_LEN + user_msg.len + 1);
+  memcpy(req->buf.base, username, USERNAME_LEN);
+  memcpy(req->buf.base + USERNAME_LEN, user_msg.base, user_msg.len + 1);
+
+  uv_write((uv_write_t*) req, (uv_stream_t*) socket_, &req->buf, 1, after_write);
 }
 
 
 void clear_message_input() {
-  char data[256];
-  uv_buf_t buf;
-  buf.base = data;
-  int pos_y = height - INPUT_AREA_HEIGHT + 1;
-  int pos_x = PROMPT_LEN;
+  write_req_t *req = (write_req_t*) malloc(sizeof(write_req_t));
+  req->buf.base = (char*) malloc(MSG_BUF_SIZE);
+
   for (int i = 0; i < MAX_MSG_LEN; i++) {
     user_msg.base[i] = ' ';
   }
   user_msg.len = 0;
-  buf.len = sprintf(buf.base, "\033[H\033[%dB\033[%dC\033[0J", pos_y, pos_x, user_msg.base);
-  uv_write(&write_req2, (uv_stream_t*) &tty, &buf, 1, NULL);
+
+  int cursor_y = height - INPUT_AREA_HEIGHT + 1;
+  int cursor_x = PROMPT_LEN;
+  req->buf.len = sprintf(req->buf.base, "\033[H\033[%dB\033[%dC\033[0J",
+                         cursor_y, cursor_x, user_msg.base);
+  uv_write((uv_write_t*) req, (uv_stream_t*) &tty, &req->buf, 1, after_write);
 }
 
 
+/*
+ * Process single keypress.
+ * Update screen and send message if user pressed enter.
+ */
 void process_char(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
   if (nread < 0){
     printf("close\n");
-    if (nread == UV_EOF){
-      // end of file
-			int a = 3;
+    if (nread == UV_EOF) {
+      printf("end of file\n");
     }
   } else if (nread > 0) {
     assert(nread == 1); // line buffering is turned off
@@ -222,28 +236,15 @@ void process_char(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
 		  update_user_message(c);
     }
   }
-  // OK to free buffer as write_data copies it.
-  if (buf->base) {
-    free(buf->base);
-  }
+  free(buf->base);
 }
 
 
 int main() {
-  char *username = malloc(20);
-  //printf("Enter username: ");
-  //scanf("%s", username);
-  strcpy(username, "uname");
+  get_username();
 
   user_msg.base = (char*) malloc(MAX_MSG_LEN + 1);
-  /*strncpy(user_msg.base, username, strlen(username));
-  user_msg.base[strlen(username)] = ':';
-  for (int i = strlen(username) + 1; i < USERNAME_LEN; i++) {
-    user_msg.base[i] = ' ';
-  }
-  printf("%s\n", user_msg.base);*/
   user_msg.len = 0;
-
 
   loop = uv_default_loop();
 
@@ -252,9 +253,10 @@ int main() {
   uv_read_start((uv_stream_t*)&in, alloc_buffer, process_char);
 
   socket_ = (uv_tcp_t*) malloc(sizeof(uv_tcp_t));
-  socket_->data  = (void*) username;
+  //socket_->data = (void*) username;
   uv_tcp_init(loop, socket_);
-  connect_ = (uv_connect_t*) malloc(sizeof(uv_connect_t));
+  uv_connect_t* connect_ = (uv_connect_t*) malloc(sizeof(uv_connect_t));
+  struct sockaddr_in addr;
   uv_ip4_addr(DEFAULT_SERVER_IP, DEFAULT_SERVER_PORT, &addr);
   uv_tcp_connect(connect_, socket_, (const struct sockaddr*)&addr, on_connect);
   int r = 0;
