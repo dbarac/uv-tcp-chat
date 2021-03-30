@@ -77,6 +77,24 @@ void send_to_all(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
   free(buf->base);
 }
 
+
+/*
+ * Send a message to all clients after timeout.
+ */
+void timer_callback(uv_timer_t *req) {
+  for (int i = 0; i < num_clients; i++) {
+    if (clients[i] == NULL) {
+      continue;
+    }
+    write_req_t *req = (write_req_t*) malloc(sizeof(write_req_t));
+    char *message = "**timer usage example**";
+    req->buf.len = strlen(message) + 1;
+    req->buf.base = (char*) malloc(req->buf.len);
+    strcpy(req->buf.base, message);
+    uv_write((uv_write_t*) req, clients[i], &req->buf, 1, after_write);
+  }
+}
+
 /*
  * Accept new client connection, add to list of all clients.
  * Start reading incoming messages.
@@ -107,7 +125,7 @@ void on_new_connection(uv_stream_t *server, int status) {
 /*
  * Multi-user TCP chat server
  */
-int main() {
+int main(int argc, char *argv[]) {
   loop = uv_default_loop();
   uv_tcp_t server;
   uv_tcp_init(loop, &server);
@@ -121,6 +139,13 @@ int main() {
     return 1;
   } else {
     printf("Listening on port %d\n", DEFAULT_PORT);
+  }
+  
+  uv_timer_t timer;
+  if (argc == 2 && !strcmp(argv[1], "--timer")) {
+    printf("no\n");
+    uv_timer_init(loop, &timer);
+    uv_timer_start(&timer, timer_callback, 1000, 5000);
   }
   return uv_run(loop, UV_RUN_DEFAULT);
 }

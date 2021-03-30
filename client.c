@@ -64,11 +64,11 @@ void get_username() {
 
 void disable_line_buffering_and_echo() {
   struct termios term;
-	tcgetattr(STDIN_FILENO, &term);
-	term.c_lflag &= ~ICANON;
+  tcgetattr(STDIN_FILENO, &term);
+  term.c_lflag &= ~ICANON;
   term.c_lflag &= ~ECHO;
-	tcsetattr(STDIN_FILENO, TCSANOW, &term);
-	setbuf(stdin, NULL);
+  tcsetattr(STDIN_FILENO, TCSANOW, &term);
+  setbuf(stdin, NULL);
 }
 
 
@@ -233,11 +233,11 @@ void process_char(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
     }
   } else if (nread == 1) {
     char c = buf->base[0];
-		if (c == '\n') {
+    if (c == '\n') {
       send_message();
       clear_message_input();
-		} else if (isprint(c) || c == KEY_BACKSPACE) {
-		  update_user_message(c);
+    } else if (isprint(c) || c == KEY_BACKSPACE) {
+      update_user_message(c);
     }
   }
   free(buf->base);
