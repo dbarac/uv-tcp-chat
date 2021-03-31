@@ -49,6 +49,7 @@ void after_write(uv_write_t *req, int status) {
   free_write_req(req);
 }
 
+
 /*
  * Send received message to all connected clients.
  * In case of error, close sender connection and remove from list of clients.
@@ -65,7 +66,6 @@ void send_to_all(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
       req->buf = uv_buf_init(message, nread);
       uv_write((uv_write_t*) req, clients[i], &req->buf, 1, after_write);
     }
-    //return;
   } else if (nread < 0) {
     num_clients--;
     if (nread != UV_EOF) {
@@ -87,7 +87,7 @@ void timer_callback(uv_timer_t *req) {
       continue;
     }
     write_req_t *req = (write_req_t*) malloc(sizeof(write_req_t));
-    char *message = "**timer usage example**";
+    char *message = "server:     **timer usage example**";
     req->buf.len = strlen(message) + 1;
     req->buf.base = (char*) malloc(req->buf.len);
     strcpy(req->buf.base, message);
@@ -95,13 +95,14 @@ void timer_callback(uv_timer_t *req) {
   }
 }
 
+
 /*
  * Accept new client connection, add to list of all clients.
  * Start reading incoming messages.
  */
 void on_new_connection(uv_stream_t *server, int status) {
   if (status < 0) {
-    fprintf(stderr, "New connection error %\n", uv_strerror(status));
+    fprintf(stderr, "New connection error %s\n", uv_strerror(status));
     return;
   } 
   if (num_clients == MAX_CLIENTS) {
@@ -121,6 +122,7 @@ void on_new_connection(uv_stream_t *server, int status) {
     uv_close((uv_handle_t*) client, free_client);
   }
 }
+
 
 /*
  * Multi-user TCP chat server
@@ -143,9 +145,11 @@ int main(int argc, char *argv[]) {
   
   uv_timer_t timer;
   if (argc == 2 && !strcmp(argv[1], "--timer")) {
-    printf("no\n");
     uv_timer_init(loop, &timer);
     uv_timer_start(&timer, timer_callback, 1000, 5000);
   }
-  return uv_run(loop, UV_RUN_DEFAULT);
+
+  uv_run(loop, UV_RUN_DEFAULT);
+  uv_loop_close(loop);
+  return 0;
 }

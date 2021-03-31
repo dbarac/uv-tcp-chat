@@ -9,12 +9,12 @@
 
 #define DEFAULT_SERVER_PORT 7000
 #define DEFAULT_SERVER_IP "127.0.0.1"
-#define MAX_MSG_LEN 78
+#define MAX_MSG_LEN 66
 #define MSG_BUF_SIZE 256
 #define INPUT_AREA_HEIGHT 5
 #define KEY_BACKSPACE 127
 #define PROMPT_LEN 14
-#define USERNAME_LEN 10
+#define USERNAME_LEN 12
 
 typedef struct {
   uv_write_t req;
@@ -53,9 +53,14 @@ void after_write(uv_write_t *req, int status) {
 }
 
 
+void after_close(uv_handle_t *handle) {
+  free(handle);
+}
+
+
 void get_username() {
   printf("Enter username: ");
-  scanf("%8s", username);
+  scanf("%10s", username);
   int i = strlen(username);
   username[i] = ':';
   while (++i <= USERNAME_LEN) username[i] = ' ';
@@ -73,8 +78,22 @@ void disable_line_buffering_and_echo() {
 
 
 /*
- * Find window size, disable line buffering and keypress echo,
- * setup interface and initial cursor position.
+ * Free resources and reset terminal settings.
+ */
+void close_app(char *msg) {
+  uv_close((uv_handle_t*) socket_, after_close);
+  uv_close((uv_handle_t*) &tty, NULL);
+  uv_close((uv_handle_t*) &in, NULL);
+  free(user_msg.base);
+  uv_tty_reset_mode();
+  system("reset");
+  printf("\033[2J\033[H%s\n", msg);
+}
+
+
+/*
+ * Find window size, disable line buffering and keypress echo.
+ * Setup interface and initial cursor position.
  */
 void setup_terminal() {
   if (uv_tty_get_winsize(&tty, &width, &height)) {
@@ -126,6 +145,9 @@ void update_chat(const uv_buf_t *message) {
 }
 
 
+/*
+ * Update chat. Close handles and reset terminal if server closes connection.
+ */
 void receive_message(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
   if (nread > 0) {
     update_chat(buf);
@@ -134,9 +156,8 @@ void receive_message(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
     if (nread != UV_EOF) {
       fprintf(stderr, "Read error %s\n", uv_err_name(nread));
     }
-    printf("close\n");
-    uv_close((uv_handle_t*) client, NULL);
-  }
+    close_app("Chat server closed connection.");
+ }
   free(buf->base);
 }
 
@@ -150,31 +171,17 @@ void send_message() {
   }
   write_req_t *req = (write_req_t*) malloc(sizeof(write_req_t));
   req->buf.len = USERNAME_LEN + user_msg.len + 1;
-  req->buf.base = (char*) malloc(USERNAME_LEN + user_msg.len + 1);
+  req->buf.base = (char*) malloc(req->buf.len);
   memcpy(req->buf.base, username, USERNAME_LEN);
   memcpy(req->buf.base + USERNAME_LEN, user_msg.base, user_msg.len + 1);
 
   uv_write((uv_write_t*) req, (uv_stream_t*) socket_, &req->buf, 1, after_write);
   for (int i = 0; i < MAX_MSG_LEN; i++) {
-    user_msg.base[i] = ' ';
+    user_msg.base[i] = '\0';
   }
   user_msg.len = 0;
 }
 
-
-void on_connect(uv_connect_t* req, int status) {
-  if (status < 0) {
-    fprintf(stderr, "New connection error %s\n", uv_strerror(status));
-    return;
-  } else {
-    //printf("Connected to server: %s\n", DEFAULT_SERVER_IP);
-  }
-  strcpy(user_msg.base, "**connected**");
-  user_msg.len = strlen(user_msg.base);
-  send_message();
-
-  uv_read_start((uv_stream_t*)req->handle, alloc_buffer, receive_message);
-}
 
 /*
  * Update user_msg and tty depending on input char:
@@ -207,16 +214,14 @@ void update_user_message(char input) {
 }
 
 
-
 void clear_message_input() {
   write_req_t *req = (write_req_t*) malloc(sizeof(write_req_t));
   req->buf.base = (char*) malloc(MSG_BUF_SIZE);
 
-
   int cursor_y = height - INPUT_AREA_HEIGHT + 1;
   int cursor_x = PROMPT_LEN;
   req->buf.len = sprintf(req->buf.base, "\033[H\033[%dB\033[%dC\033[0J",
-                         cursor_y, cursor_x);//, user_msg.base);
+                         cursor_y, cursor_x);
   uv_write((uv_write_t*) req, (uv_stream_t*) &tty, &req->buf, 1, after_write);
 }
 
@@ -226,11 +231,8 @@ void clear_message_input() {
  * Update screen and send message if user pressed enter.
  */
 void process_char(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
-  if (nread < 0){
-    printf("close\n");
-    if (nread == UV_EOF) {
-      printf("end of file\n");
-    }
+  if (nread < 0) {
+    close_app("Input error.");
   } else if (nread == 1) {
     char c = buf->base[0];
     if (c == '\n') {
@@ -245,6 +247,31 @@ void process_char(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf) {
 
 
 /*
+ * If connection is sucessful, open input and output streams
+ * and start receiving messages. In case of error, close socket.
+ */
+void on_connect(uv_connect_t* req, int status) {
+  if (status < 0) {
+    uv_close((uv_handle_t*) socket_, after_close);
+    fprintf(stderr, "Connection error: %s\n", uv_strerror(status));
+    return;
+  }
+  uv_tty_init(loop, &tty, STDOUT_FILENO, 0);
+  uv_tty_set_mode(&tty, UV_TTY_MODE_NORMAL);
+  setup_terminal();
+
+  uv_pipe_init(loop, &in, 0);
+  uv_pipe_open(&in, 0);
+  uv_read_start((uv_stream_t*)&in, alloc_buffer, process_char);
+
+  strcpy(user_msg.base, "**connected**");
+  user_msg.len = strlen(user_msg.base);
+  send_message();
+
+  uv_read_start((uv_stream_t*)req->handle, alloc_buffer, receive_message);
+}
+
+/*
  * TCP chat client
  */
 int main() {
@@ -255,24 +282,18 @@ int main() {
 
   loop = uv_default_loop();
 
-  uv_pipe_init(loop, &in, 0);
-  uv_pipe_open(&in, 0);
-  uv_read_start((uv_stream_t*)&in, alloc_buffer, process_char);
-
   socket_ = (uv_tcp_t*) malloc(sizeof(uv_tcp_t));
   uv_tcp_init(loop, socket_);
-  uv_connect_t* connect_ = (uv_connect_t*) malloc(sizeof(uv_connect_t));
+  uv_connect_t connect_req;
   struct sockaddr_in addr;
   uv_ip4_addr(DEFAULT_SERVER_IP, DEFAULT_SERVER_PORT, &addr);
-  int r = uv_tcp_connect(connect_, socket_, (const struct sockaddr*)&addr, on_connect);
+  int r = uv_tcp_connect(&connect_req, socket_, (const struct sockaddr*)&addr, on_connect);
   if (r) {
     fprintf(stderr, "Server connection error %s\n", uv_strerror(r));
     return 1;
   }
 
-  uv_tty_init(loop, &tty, STDOUT_FILENO, 0);
-  uv_tty_set_mode(&tty, UV_TTY_MODE_NORMAL);
-  setup_terminal();
-
-  return uv_run(loop, UV_RUN_DEFAULT);
+  uv_run(loop, UV_RUN_DEFAULT);
+  uv_loop_close(loop);
+  return 0;
 }

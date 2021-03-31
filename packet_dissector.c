@@ -26,7 +26,7 @@ void extract_ip(unsigned char packet_bytes[]) {
   int ethertype_offset = 2 * MAC_ADDR_LEN;
   int payload_offset = 14;
   // check for optional vlan tag
-  if ((unsigned) packet_bytes[ethertype_offset] == 0x8100) {
+  if ((unsigned short) packet_bytes[ethertype_offset] == 0x8100) {
     payload_offset += 4;
   }
 
