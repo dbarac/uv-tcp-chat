@@ -56,7 +56,7 @@ void after_write(uv_write_t *req, int status) {
  */
 void send_to_all(uv_stream_t *client, ssize_t nread, const uv_buf_t *buf) {
   if (nread > 0) {
-    for (int i = 0; i < num_clients; i++) {
+    for (int i = 0; i < MAX_CLIENTS; i++) {
       if (clients[i] == NULL) {
         continue;
       }
